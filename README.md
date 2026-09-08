@@ -69,6 +69,18 @@ npm test
 ```
 A parte offline (formatação, permissões, URLs) roda em qualquer máquina. A parte de rede é **ignorada com aviso** onde o YouTube estiver bloqueado (ex.: PC de desenvolvimento).
 
+## 🐛 Solução de problemas
+
+- **Avisos `[YOUTUBEJS][Parser]` / `[YOUTUBEJS][Text]` gigantes no console**
+  O YouTube adiciona novos componentes de UI às páginas (ex.: a prateleira de compras `ShoppingTimelyShelfView`) e a lib `youtubei.js` ainda não os conhece. **São inofensivos**: o parser gera a classe dinamicamente e o download continua normal. O bot já instala automaticamente (`src/utils/youtube-quiet.js`) um handler que silencia o ruído e registra cada node desconhecido apenas 1 vez, em 1 linha. Ao atualizar o `youtubei.js` para uma versão que conheça o node, o aviso simplesmente deixa de aparecer.
+
+- **`409 Conflict: terminated by other getUpdates request`**
+  Já existe **outra instância do bot rodando com o mesmo token** (ou outra conexão de polling aberta). Pare a outra instância antes de iniciar mais uma.
+
+- **`unable to verify the first certificate`**
+  Interferência de firewall/proxy com inspeção SSL no ambiente (típico em rede corporativa). No servidor de produção com acesso direto isso não ocorre.
+
+
 ## ⚠️ Limitações e observações
 
 - **API oficial do Telegram**: bots enviam no máximo 50 MB por arquivo. Sem ffmpeg, só formatos progressivos que caibam nesse limite são enviados. **Com ffmpeg**, vídeos maiores são mesclados em HD e divididos em partes de ~45 MB (cada parte recebe o botão de exclusão).

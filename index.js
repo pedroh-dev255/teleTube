@@ -3,6 +3,10 @@ const config = require('./src/config');
 const permissions = require('./src/services/permissions');
 const ffmpeg = require('./src/utils/ffmpeg');
 
+// Silencia os avisos verbosos do parser do YouTube (nodes novos da UI não
+// afetam os downloads). Precisa rodar antes do primeiro uso do youtubei.js.
+require('./src/utils/youtube-quiet').configure().catch(() => {});
+
 if (!config.botToken) {
   console.error('❌ Token do bot não configurado!');
   console.error('   Crie um bot com o @BotFather no Telegram e coloque o token no arquivo .env:');

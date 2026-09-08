@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const config = require("../config");
 const ffmpegUtil = require("../utils/ffmpeg");
+const youtubeQuiet = require("../utils/youtube-quiet");
 const { sanitizeFilename, formatBytes } = require("../utils/format");
 
 const MAX_UPLOAD_BYTES = config.telegram.maxUploadMB * 1024 * 1024;
@@ -20,9 +21,14 @@ let youtubeInstancePromise = null;
   */
 async function getYouTube() {
   if (!youtubeInstancePromise) {
-    youtubeInstancePromise = import("youtubei.js").then(({ Innertube }) =>
-      Innertube.create(),
-    );
+    youtubeInstancePromise = (async () => {
+      // Silencia os avisos do parser ANTES do primeiro uso do YouTube.js
+      await youtubeQuiet.configure();
+
+      const { Innertube } = await import("youtubei.js");
+
+      return Innertube.create();
+    })();
   }
 
   return youtubeInstancePromise;
