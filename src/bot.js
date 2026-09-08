@@ -1,8 +1,10 @@
+const crypto = require('crypto');
 const TelegramBot = require('node-telegram-bot-api');
 
 const config = require('./config');
 const youtube = require('./services/youtube');
 const downloader = require('./services/downloader');
+const permissions = require('./services/permissions');
 const {
   formatDuration,
   formatViews,
@@ -13,6 +15,10 @@ const {
 
 const RESULTS_PER_PAGE = config.search.resultsPerPage;
 
+const sizeNote = config.telegramApiUrl
+  ? `📡 Servidor local da Bot API ativo — arquivos de até ~${config.telegram.maxUploadMB} MB em parte única.`
+  : `⚠️ Arquivos acima de <b>${config.telegram.maxUploadMB} MB</b> são divididos em partes. Abaixo de cada vídeo há um botão <b>🗑️ Excluir</b> para removê-lo depois.`;
+
 const HELP_TEXT = [
   '🎵 <b>teleTube</b> — pesquise e baixe vídeos do YouTube direto no Telegram!',
   '',
@@ -20,42 +26,152 @@ const HELP_TEXT = [
   '1️⃣ Envie qualquer texto (ex.: <i>lofi hip hop</i>) para pesquisar no YouTube;',
   '2️⃣ Cada resultado aparece com a thumbnail e botões de 🎵 áudio e 🎬 vídeo;',
   '3️⃣ Toque em um botão e aguarde — o arquivo chega aqui no chat.',
+  '💡 Você também pode colar o <b>link</b> de um vídeo para baixá-lo direto.',
   '',
   '<b>Comandos:</b>',
   '/search &lt;termo&gt; — pesquisar no YouTube',
+  '/id — mostrar seu ID do Telegram',
   '/help — mostrar esta mensagem',
   '',
-  '💡 Você também pode colar o <b>link</b> de um vídeo para baixá-lo direto.',
-  `⚠️ Limite de <b>${config.telegram.maxUploadMB} MB</b> por arquivo (limitação da API do Telegram para bots).`,
+  '<b>Administração (somente o dono):</b>',
+  '/adduser &lt;id&gt; — liberar acesso para um novo ID',
+  '/deluser &lt;id&gt; — revogar acesso de um ID',
+  '/users — listar IDs com permissão',
+  '',
+  sizeNote,
 ].join('\n');
 
-function createBot(token) {
-  const bot = new TelegramBot(token, { polling: true });
+function createBot(token, options = {}) {
+  const ffmpegAvailable = options.ffmpegAvailable === true;
+  const bot = new TelegramBot(token, {
+    polling: true,
+    ...(config.telegramApiUrl ? { baseApiUrl: config.telegramApiUrl } : {}),
+  });
 
   // Última busca por chat (usada na paginação "Mais resultados")
   const chatState = new Map();
   // Downloads em andamento: `${chatId}:${tipo}:${videoId}`
   const activeDownloads = new Set();
+  // Mensagens enviadas que podem ser excluídas pelo botão 🗑️
+  const deleteRegistry = new Map(); // deleteId -> { chatId, messageIds: [] }
+  // Anti-spam do aviso de "sem permissão" (1 aviso por minuto por usuário)
+  const denialLog = new Map();
 
   bot.on('polling_error', (err) => console.error('[polling_error]', err.message));
 
+  // ---------- Permissões ----------
+  function denyAccess(chatId, from) {
+    if (!from) return;
+    const last = denialLog.get(from.id) || 0;
+    if (Date.now() - last < 60000) return;
+    denialLog.set(from.id, Date.now());
+    bot
+      .sendMessage(
+        chatId,
+        `⛔ Você não tem permissão para usar este bot.\n🆔 Seu ID: <code>${from.id}</code>\n` +
+          `O dono pode liberar você com <code>/adduser ${from.id}</code>.`,
+        { parse_mode: 'HTML' }
+      )
+      .catch(() => {});
+  }
+
+  /** Envolve handlers exigindo permissão do remetente */
+  function guard(handler) {
+    return (msg, ...rest) => {
+      if (!msg.from || !permissions.isAllowed(msg.from.id)) {
+        return denyAccess(msg.chat.id, msg.from);
+      }
+      return handler(msg, ...rest);
+    };
+  }
+
   // ---------- Comandos ----------
-  bot.onText(/^\/(start|help)/, (msg) => {
+  bot.onText(/^\/(start|help)(?:@[\w]+)?$/, guard((msg) => {
     bot.sendMessage(msg.chat.id, HELP_TEXT, { parse_mode: 'HTML' }).catch(() => {});
-  });
+  }));
 
-  bot.onText(/^\/search(?:@\w+)?\s+(.+)/i, (msg, match) => {
+  bot.onText(/^\/search(?:@[\w]+)?\s+(.+)/i, guard((msg, match) => {
     doSearch(msg.chat.id, match[1].trim(), 1).catch(() => {});
-  });
+  }));
 
-  bot.onText(/^\/search$/i, (msg) => {
+  bot.onText(/^\/search$/i, guard((msg) => {
     bot
       .sendMessage(msg.chat.id, 'Use: <code>/search termo da busca</code>', { parse_mode: 'HTML' })
       .catch(() => {});
+  }));
+
+  // /id é aberto a qualquer pessoa (o dono precisa descobrir IDs para liberar)
+  bot.onText(/^\/id(?:@[\w]+)?$/i, (msg) => {
+    const from = msg.from || {};
+    bot
+      .sendMessage(
+        msg.chat.id,
+        `🆔 Seu ID: <code>${from.id}</code>${permissions.isAllowed(from.id) ? ' (autorizado ✅)' : ''}`,
+        { parse_mode: 'HTML' }
+      )
+      .catch(() => {});
   });
 
+  bot.onText(/^\/adduser(?:@[\w]+)?\s+(\d{4,20})$/i, guard((msg, match) => {
+    if (!permissions.isOwner(msg.from.id)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Apenas o dono do bot pode gerenciar permissões.');
+    }
+    try {
+      const added = permissions.addUser(match[1]);
+      bot
+        .sendMessage(
+          msg.chat.id,
+          added
+            ? `✅ Usuário <code>${match[1]}</code> agora tem permissão.`
+            : `ℹ️ O usuário <code>${match[1]}</code> já tinha permissão.`,
+          { parse_mode: 'HTML' }
+        )
+        .catch(() => {});
+    } catch (err) {
+      bot.sendMessage(msg.chat.id, `⚠️ ${escapeHtml(err.message)}`).catch(() => {});
+    }
+  }));
+
+  bot.onText(/^\/deluser(?:@[\w]+)?\s+(\d{4,20})$/i, guard((msg, match) => {
+    if (!permissions.isOwner(msg.from.id)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Apenas o dono do bot pode gerenciar permissões.');
+    }
+    try {
+      const removed = permissions.removeUser(match[1]);
+      bot
+        .sendMessage(
+          msg.chat.id,
+          removed
+            ? `✅ Permissão do usuário <code>${match[1]}</code> revogada.`
+            : `ℹ️ O usuário <code>${match[1]}</code> não estava na lista.`,
+          { parse_mode: 'HTML' }
+        )
+        .catch(() => {});
+    } catch (err) {
+      bot.sendMessage(msg.chat.id, `⚠️ ${escapeHtml(err.message)}`).catch(() => {});
+    }
+  }));
+
+  bot.onText(/^\/users(?:@[\w]+)?$/i, guard((msg) => {
+    if (!permissions.isOwner(msg.from.id)) {
+      return bot.sendMessage(msg.chat.id, '⛔ Apenas o dono do bot pode ver a lista de permissões.');
+    }
+    const users = permissions.list();
+    const lines = users.map(
+      (id, i) => `${i + 1}. <code>${id}</code>${id === config.ownerId ? ' 👑 <i>(dono)</i>' : ''}`
+    );
+    bot
+      .sendMessage(
+        msg.chat.id,
+        `👥 <b>${users.length}</b> usuário(s) autorizado(s):\n${lines.join('\n')}\n\n` +
+          'Gerencie com <code>/adduser &lt;id&gt;</code> e <code>/deluser &lt;id&gt;</code>.',
+        { parse_mode: 'HTML' }
+      )
+      .catch(() => {});
+  }));
+
   // Qualquer outro texto = link direto do YouTube ou pesquisa livre
-  bot.on('text', (msg) => {
+  bot.on('text', guard((msg) => {
     const text = (msg.text || '').trim();
     if (!text || text.startsWith('/')) return;
 
@@ -65,16 +181,20 @@ function createBot(token) {
       return;
     }
     doSearch(msg.chat.id, text, 1).catch(() => {});
-  });
+  }));
 
   // ---------- Callbacks (botões inline) ----------
   bot.on('callback_query', (query) => {
+    if (!query.from || !permissions.isAllowed(query.from.id)) {
+      return bot.answerCallbackQuery(query.id, { text: '⛔ Sem permissão.' }).catch(() => {});
+    }
     const data = query.data || '';
     const chatId = query.message && query.message.chat.id;
     if (!chatId) return bot.answerCallbackQuery(query.id).catch(() => {});
 
     const pageMatch = /^p:(\d+)$/.exec(data);
     const dlMatch = /^(a|v):([\w-]{11})$/.exec(data);
+    const delMatch = /^del:([a-f0-9]{8})$/.exec(data);
 
     if (pageMatch) {
       bot.answerCallbackQuery(query.id).catch(() => {});
@@ -87,6 +207,10 @@ function createBot(token) {
       bot.answerCallbackQuery(query.id).catch(() => {});
       const type = dlMatch[1] === 'a' ? 'audio' : 'video';
       return handleDownload(chatId, type, dlMatch[2]);
+    }
+
+    if (delMatch) {
+      return handleDeleteCallback(query, delMatch[1]);
     }
 
     return bot.answerCallbackQuery(query.id).catch(() => {});
@@ -199,7 +323,57 @@ function createBot(token) {
     }
   }
 
-  /** Fluxo completo: busca informações, baixa com progresso e envia o arquivo */
+  // ---------- Botão de exclusão dos vídeos enviados ----------
+
+  function deleteKeyboard(deleteId) {
+    return {
+      inline_keyboard: [[{ text: '🗑️ Excluir', callback_data: `del:${deleteId}` }]],
+    };
+  }
+
+  /** Registra um alvo de exclusão (as messageIds são adicionadas após cada envio) */
+  function registerDeletionTarget(chatId) {
+    const deleteId = crypto.randomBytes(4).toString('hex'); // 8 hex chars
+    const entry = { chatId, messageIds: [] };
+    deleteRegistry.set(deleteId, entry);
+    // Mensagens não podem ser excluídas após 48h; esquece antes disso
+    const timer = setTimeout(() => deleteRegistry.delete(deleteId), 24 * 60 * 60 * 1000);
+    if (timer.unref) timer.unref();
+    return { deleteId, entry };
+  }
+
+  async function handleDeleteCallback(query, deleteId) {
+    const entry = deleteRegistry.get(deleteId);
+    if (!entry) {
+      return bot
+        .answerCallbackQuery(query.id, {
+          text: '⌛ Registro expirado: mensagens não podem mais ser excluídas (limite de 48h do Telegram).',
+          show_alert: true,
+        })
+        .catch(() => {});
+    }
+
+    let removed = 0;
+    for (const messageId of entry.messageIds) {
+      try {
+        await bot.deleteMessage(entry.chatId, messageId);
+        removed += 1;
+      } catch (err) {
+        console.error('[delete-message]', err.message);
+      }
+    }
+    deleteRegistry.delete(deleteId);
+
+    return bot
+      .answerCallbackQuery(query.id, {
+        text: removed
+          ? `🗑️ ${removed} mensagem(ns) excluída(s).`
+          : '⚠️ Não foi possível excluir (limite de 48h pode ter passado).',
+      })
+      .catch(() => {});
+  }
+
+  /** Fluxo completo: busca informações, baixa (mescla/divide) e envia o arquivo */
   async function handleDownload(chatId, type, videoId) {
     const key = `${chatId}:${type}:${videoId}`;
     if (activeDownloads.has(key)) {
@@ -208,82 +382,80 @@ function createBot(token) {
     activeDownloads.add(key);
 
     const statusMsg = await bot.sendMessage(chatId, '📄 Buscando informações do vídeo...');
-    let mediaPath = null;
-    let thumbPath = null;
+    const cleanupPaths = [];
+
+    // Status com estágio atual + progresso (edição limitada a 1 a cada 3s)
+    let lastEdit = 0;
+    let stageText = '';
+    const onStage = (text) => {
+      stageText = text;
+      safeEdit(chatId, statusMsg.message_id, text);
+    };
+    const onProgress = (pct) => {
+      const now = Date.now();
+      if (stageText && now - lastEdit > 3000) {
+        lastEdit = now;
+        safeEdit(chatId, statusMsg.message_id, `${stageText} ${Math.min(99, Math.floor(pct))}%`);
+      }
+    };
 
     try {
       const info = await downloader.getVideoInfo(videoId);
       const details = info.videoDetails;
       const title = details.title || 'Vídeo do YouTube';
       const duration = Math.floor(Number(details.lengthSeconds) || 0);
+      const maxBytes = downloader.MAX_UPLOAD_BYTES;
+      const splitTargetBytes = config.telegram.splitTargetMB * 1024 * 1024;
 
-      const choice = type === 'audio' ? downloader.pickAudio(info) : downloader.pickVideo(info);
-      if (!choice) {
-        return safeEdit(
-          chatId,
-          statusMsg.message_id,
-          `⚠️ Nenhuma versão de ${type === 'audio' ? 'áudio' : 'vídeo'} deste vídeo cabe no limite de ` +
-            `<b>${config.telegram.maxUploadMB} MB</b> da API do Telegram.`
-        );
-      }
-
-      // Progresso com edição de mensagem limitada a 1 atualização a cada 3s
-      let lastEdit = 0;
-      const onProgress = (done, total) => {
-        const now = Date.now();
-        if (total && now - lastEdit > 3000) {
-          lastEdit = now;
-          const pct = Math.min(100, Math.floor((done / total) * 100));
-          safeEdit(
+      let prepared;
+      if (type === 'audio') {
+        prepared = await downloader.prepareAudio(info, { maxBytes });
+        if (!prepared) {
+          return safeEdit(
             chatId,
             statusMsg.message_id,
-            `⏬ Baixando <b>${escapeHtml(truncate(title, 60))}</b>... ${pct}% ` +
-              `(${formatBytes(done)} de ${formatBytes(total)})`
+            `⚠️ Nenhuma faixa de áudio deste vídeo cabe no limite de <b>${config.telegram.maxUploadMB} MB</b>.`
           );
         }
-      };
-
-      await safeEdit(
-        chatId,
-        statusMsg.message_id,
-        `⏬ Baixando <b>${escapeHtml(truncate(title, 60))}</b>...`
-      );
-
-      const { filePath, size } = await downloader.downloadMedia(info, choice, onProgress);
-      mediaPath = filePath;
-
-      if (size > downloader.MAX_UPLOAD_BYTES) {
-        throw new Error(
-          `arquivo de ${formatBytes(size)} excede o limite do Telegram (${config.telegram.maxUploadMB} MB)`
-        );
-      }
-
-      await safeEdit(chatId, statusMsg.message_id, `📤 Enviando (${formatBytes(size)})...`);
-      await bot.sendChatAction(chatId, type === 'audio' ? 'upload_voice' : 'upload_video');
-
-      if (type === 'audio') {
-        thumbPath = await downloader.downloadThumbnail(videoId);
-        try {
-          await bot.sendAudio(chatId, mediaPath, {
-            title: truncate(title, 64),
-            performer: truncate(details.author && details.author.name, 64),
-            duration,
-            ...(thumbPath ? { thumb: thumbPath } : {}),
-          });
-        } catch (err) {
-          // Alguns servidores rejeitam o parâmetro thumb; tenta novamente sem ele
-          console.error('[send-audio com thumb]', err.message);
-          await bot.sendAudio(chatId, mediaPath, {
-            title: truncate(title, 64),
-            performer: truncate(details.author && details.author.name, 64),
-            duration,
-          });
-        }
       } else {
-        await bot.sendVideo(chatId, mediaPath, {
-          caption: `🎬 ${truncate(title, 200)}`,
-          supports_streaming: true,
-        });
+        prepared = await downloader.prepareVideo(
+          info,
+          { maxBytes, splitTargetBytes, ffmpegAvailable },
+          { onStage, onProgress }
+        );
+        if (!prepared) {
+          return safeEdit(
+            chatId,
+            statusMsg.message_id,
+            `⚠️ Nenhuma versão de vídeo deste vídeo cabe no limite de <b>${config.telegram.maxUploadMB} MB</b>.`
+          );
+        }
+      }
+      cleanupPaths.push(...prepared.cleanup);
+
+      const totalParts = prepared.files.length;
+      const deletion = registerDeletionTarget(chatId);
+
+      for (let i = 0; i < totalParts; i++) {
+        const file = prepared.files[i];
+        await bot.sendChatAction(chatId, type === 'audio' ? 'upload_voice' : 'upload_video');
+        const partLabel = totalParts > 1 ? ` — Parte ${i + 1}/${totalParts}` : '';
+        const qualityLabel = prepared.label ? ` (${prepared.label})` : '';
+
+        if (type === 'audio') {
+          await bot.sendAudio(chatId, file.path, {
+            title: truncate(title, 64),
+            performer: truncate(details.author && details.author.name, 64),
+            duration,
+          });
+        } else {
+          const sent = await bot.sendVideo(chatId, file.path, {
+            caption: `🎬 ${truncate(title, 180)}${qualityLabel}${partLabel}`,
+            supports_streaming: true,
+            reply_markup: deleteKeyboard(deletion.deleteId),
+          });
+          deletion.entry.messageIds.push(sent.message_id);
+        }
       }
 
       await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
@@ -296,8 +468,7 @@ function createBot(token) {
       );
     } finally {
       activeDownloads.delete(key);
-      downloader.deleteFile(mediaPath);
-      downloader.deleteFile(thumbPath);
+      cleanupPaths.forEach(downloader.deleteFile);
     }
   }
 
@@ -320,5 +491,6 @@ function createBot(token) {
 }
 
 module.exports = { createBot };
+
 
 

@@ -1,2 +1,15 @@
 # Token do bot - obtenha com o @BotFather no Telegram
 BOT_TOKEN=
+
+# IDs com permissao (separados por virgula). O PRIMEIRO e o dono/admin.
+ALLOWED_USERS=658294274
+
+# Caminho do ffmpeg no servidor (deixe ffmpeg se estiver no PATH)
+FFMPEG_PATH=ffmpeg
+
+# OPCIONAL: servidor local da Bot API (ate ~2 GB por arquivo)
+# TELEGRAM_API_URL=http://localhost:8081
+
+# OPCIONAL: limite de download por video em MB (padrao 2048)
+# MAX_DOWNLOAD_MB=2048
+

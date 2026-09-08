@@ -1,171 +1,750 @@
-const fs = require('fs');
-const path = require('path');
-const https = require('https');
-const ytdl = require('@distube/ytdl-core');
-const config = require('../config');
-const { sanitizeFilename } = require('../utils/format');
+const fs = require("fs");
+const path = require("path");
+const config = require("../config");
+const ffmpegUtil = require("../utils/ffmpeg");
+const { sanitizeFilename, formatBytes } = require("../utils/format");
 
 const MAX_UPLOAD_BYTES = config.telegram.maxUploadMB * 1024 * 1024;
+const MB = 1024 * 1024;
+
+// -----------------------------------------------------------------------------
+// YouTube.js / Innertube
+// -----------------------------------------------------------------------------
+
+let youtubeInstancePromise = null;
+
+/**
+
+* Cria uma única instância do YouTube.js e reutiliza durante a execução.
+* Isso evita abrir uma nova sessão HTTP para cada download.
+  */
+async function getYouTube() {
+  if (!youtubeInstancePromise) {
+    youtubeInstancePromise = import("youtubei.js").then(({ Innertube }) =>
+      Innertube.create(),
+    );
+  }
+
+  return youtubeInstancePromise;
+}
+
+/**
+
+* Converte o formato do youtubei.js para um formato compatível
+* com o restante deste downloader.
+  */
+function normalizeFormat(format) {
+  if (!format) return null;
+
+  const mimeType = format.mime_type || format.mimeType || "";
+  const codecs = format.codecs || "";
+
+  const container = mimeType.includes("mp4")
+    ? "mp4"
+    : mimeType.includes("webm")
+      ? "webm"
+      : mimeType.includes("m4a")
+        ? "m4a"
+        : mimeType.includes("mp4a")
+          ? "m4a"
+          : "";
+
+  const hasVideo =
+    format.has_video !== undefined
+      ? Boolean(format.has_video)
+      : format.hasVideo !== undefined
+        ? Boolean(format.hasVideo)
+        : Boolean(format.height || format.width);
+
+  const hasAudio =
+    format.has_audio !== undefined
+      ? Boolean(format.has_audio)
+      : format.hasAudio !== undefined
+        ? Boolean(format.hasAudio)
+        : Boolean(
+            format.audio_quality ||
+            format.audioQuality ||
+            format.audio_sample_rate ||
+            format.audioSampleRate,
+          );
+
+  let audioCodec = null;
+
+  if (codecs) {
+    const codecString = String(codecs);
+
+    if (codecString.includes("mp4a")) {
+      audioCodec = "mp4a.40.2";
+    } else if (codecString.includes("opus")) {
+      audioCodec = "opus";
+    }
+  }
+
+  return {
+    ...format,
+
+    // Identificação
+    itag: Number(format.itag),
+
+    // Container / codecs
+    container,
+    codecs,
+    audioCodec,
+
+    // Vídeo
+    width: Number(format.width) || null,
+    height: Number(format.height) || null,
+    qualityLabel:
+      format.quality_label || format.qualityLabel || format.quality || null,
+
+    // Áudio
+    audioBitrate:
+      Number(format.audio_bitrate) ||
+      Number(format.audioBitrate) ||
+      Number(format.average_bitrate) ||
+      Number(format.averageBitrate) ||
+      0,
+
+    averageBitrate:
+      Number(format.average_bitrate) || Number(format.averageBitrate) || 0,
+
+    // Bitrate
+    bitrate: Number(format.bitrate) || 0,
+
+    // Tamanho
+    contentLength:
+      format.content_length !== undefined
+        ? Number(format.content_length)
+        : format.contentLength !== undefined
+          ? Number(format.contentLength)
+          : null,
+
+    // Compatibilidade com o código antigo
+    hasAudio,
+    hasVideo,
+
+    // Referência original
+    _youtubeiFormat: format,
+  };
+}
+
+/**
+
+* Obtém todos os formatos do vídeo através do youtubei.js.
+  */
+function getAllFormats(info) {
+  if (!info) return [];
+
+  if (Array.isArray(info.formats)) {
+    return info.formats;
+  }
+
+  return [];
+}
+
+/**
+
+* Filtra formatos mantendo a mesma ideia do ytdl-core.
+  */
+function filterFormats(formats, type) {
+  if (!Array.isArray(formats)) return [];
+
+  switch (type) {
+    case "audioonly":
+      return formats.filter((f) => f.hasAudio && !f.hasVideo);
+
+    case "videoonly":
+      return formats.filter((f) => f.hasVideo && !f.hasAudio);
+
+    case "audioandvideo":
+      return formats.filter((f) => f.hasAudio && f.hasVideo);
+
+    default:
+      return formats;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Helpers
+// -----------------------------------------------------------------------------
 
 /** Tamanho estimado do formato (contentLength ou bitrate x duração) */
 function estimateFormatSize(format, durationSeconds) {
   if (format.contentLength) return Number(format.contentLength);
-  const bitrate = Number(format.bitrate) || Number(format.averageBitrate);
-  if (bitrate && durationSeconds) return Math.round((bitrate / 8) * durationSeconds);
+
+  const bitrate =
+    Number(format.bitrate) ||
+    Number(format.averageBitrate) ||
+    Number(format.audioBitrate);
+
+  if (bitrate && durationSeconds) {
+    return Math.round((bitrate / 8) * durationSeconds);
+  }
+
   return null;
 }
 
 /**
- * Escolhe o melhor formato de áudio que caiba no limite do Telegram.
- * Preferência: m4a (melhor compatibilidade no Telegram), maior bitrate possível.
- * Retorna { format, size } ou null quando nem o menor formato cabe.
- */
-function pickAudio(info) {
-  const formats = ytdl.filterFormats(info.formats, 'audioonly');
+
+* Escolhe o melhor formato de áudio que caiba no limite.
+* Preferência: m4a, maior bitrate possível.
+* Retorna { format, size } ou null quando nem o menor cabe.
+  */
+function pickAudio(info, maxBytes = MAX_UPLOAD_BYTES) {
+  const formats = filterFormats(getAllFormats(info), "audioonly");
+
   if (!formats.length) return null;
+
   const duration = Number(info.videoDetails.lengthSeconds) || 0;
 
-  const m4a = formats.filter((f) => f.container === 'm4a' || f.audioCodec === 'mp4a.40.2');
+  const m4a = formats.filter(
+    (f) =>
+      f.container === "m4a" ||
+      f.audioCodec === "mp4a.40.2" ||
+      String(f.codecs || "").includes("mp4a"),
+  );
+
   const pool = (m4a.length ? m4a : formats)
-    .map((f) => ({ format: f, size: estimateFormatSize(f, duration) }))
-    .sort((a, b) => (b.format.audioBitrate || 0) - (a.format.audioBitrate || 0));
+    .map((f) => ({
+      format: f,
+      size: estimateFormatSize(f, duration),
+    }))
+    .sort(
+      (a, b) =>
+        (b.format.audioBitrate || b.format.bitrate || 0) -
+        (a.format.audioBitrate || a.format.bitrate || 0),
+    );
 
-  const fits = pool.find((c) => c.size !== null && c.size <= MAX_UPLOAD_BYTES);
+  const fits = pool.find((c) => c.size !== null && c.size <= maxBytes);
+
   if (fits) return fits;
 
-  const smallest = pool[pool.length - 1]; // pool ordenado por bitrate desc
-  if (smallest.size !== null && smallest.size > MAX_UPLOAD_BYTES) return null;
-  return smallest; // tamanho desconhecido: tenta mesmo assim
-}
+  const smallest = pool[pool.length - 1];
 
-/**
- * Escolhe o melhor formato de vídeo COM áudio (progressivo, sem ffmpeg) que caiba
- * no limite do Telegram. Preferência: container mp4, maior resolução possível.
- * Retorna { format, size } ou null quando nem o menor formato cabe.
- */
-function pickVideo(info) {
-  const combined = ytdl.filterFormats(info.formats, 'audioandvideo');
-  if (!combined.length) return null;
-  const duration = Number(info.videoDetails.lengthSeconds) || 0;
+  if (smallest.size !== null && smallest.size > maxBytes) {
+    return null;
+  }
 
-  const mp4 = combined.filter((f) => f.container === 'mp4');
-  const pool = (mp4.length ? mp4 : combined)
-    .map((f) => ({ format: f, size: estimateFormatSize(f, duration) }))
-    .sort((a, b) => (b.format.bitrate || 0) - (a.format.bitrate || 0));
-
-  const fits = pool.find((c) => c.size !== null && c.size <= MAX_UPLOAD_BYTES);
-  if (fits) return fits;
-
-  const smallest = [...pool].sort(
-    (a, b) => (a.size ?? Infinity) - (b.size ?? Infinity)
-  )[0];
-  if (smallest.size !== null && smallest.size > MAX_UPLOAD_BYTES) return null;
   return smallest;
 }
 
-/** Obtém os metadados/formatos do vídeo via ytdl-core */
-function getVideoInfo(videoId) {
-  return ytdl.getInfo(`https://www.youtube.com/watch?v=${videoId}`);
+/**
+
+* Escolhe o melhor formato progressivo
+* (áudio + vídeo juntos, sem ffmpeg).
+*
+* Preferência: MP4, maior qualidade que caiba no limite.
+  */
+function pickVideo(info, maxBytes = MAX_UPLOAD_BYTES) {
+  const combined = filterFormats(getAllFormats(info), "audioandvideo");
+
+  if (!combined.length) return null;
+
+  const duration = Number(info.videoDetails.lengthSeconds) || 0;
+
+  const mp4 = combined.filter((f) => f.container === "mp4");
+
+  const pool = (mp4.length ? mp4 : combined)
+    .map((f) => ({
+      format: f,
+      size: estimateFormatSize(f, duration),
+    }))
+    .sort((a, b) => (b.format.bitrate || 0) - (a.format.bitrate || 0));
+
+  const fits = pool.find((c) => c.size !== null && c.size <= maxBytes);
+
+  if (fits) return fits;
+
+  const smallest = [...pool].sort(
+    (a, b) => (a.size ?? Infinity) - (b.size ?? Infinity),
+  )[0];
+
+  if (smallest.size !== null && smallest.size > maxBytes) {
+    return null;
+  }
+
+  return smallest;
 }
 
 /**
- * Baixa a mídia escolhida para a pasta temporária.
- * onProgress(downloadedBytes, totalBytes) é chamado durante o download.
- * Um watchdog aborta se não houver progresso por 60s.
- */
+
+* Melhor par adaptativo:
+* vídeo H.264 + áudio M4A.
+*
+* Mantém a mesma estratégia anterior.
+  */
+function pickAdaptivePair(info) {
+  const duration = Number(info.videoDetails.lengthSeconds) || 0;
+  const capBytes = config.download.maxVideoMB * MB;
+
+  const videoFormats = filterFormats(getAllFormats(info), "videoonly")
+    .filter(
+      (f) =>
+        f.container === "mp4" &&
+        String(f.codecs || "").includes("avc1") &&
+        f.height,
+    )
+    .map((f) => ({
+      format: f,
+      size: estimateFormatSize(f, duration),
+    }));
+
+  if (!videoFormats.length) return null;
+
+  const withinCap = videoFormats.filter(
+    (c) => c.size === null || c.size <= capBytes,
+  );
+
+  const candidates = (withinCap.length ? withinCap : videoFormats).sort(
+    (a, b) =>
+      b.format.height - a.format.height ||
+      (b.format.bitrate || 0) - (a.format.bitrate || 0),
+  );
+
+  const audioFormats = filterFormats(getAllFormats(info), "audioonly")
+    .filter(
+      (f) =>
+        f.container === "m4a" ||
+        f.audioCodec === "mp4a.40.2" ||
+        String(f.codecs || "").includes("mp4a"),
+    )
+    .sort(
+      (a, b) =>
+        (b.format?.audioBitrate || b.audioBitrate || b.bitrate || 0) -
+        (a.format?.audioBitrate || a.audioBitrate || a.bitrate || 0),
+    );
+
+  if (!audioFormats.length) return null;
+
+  const best = candidates[0];
+
+  return {
+    video: best,
+
+    audio: {
+      format: audioFormats[0],
+      size: estimateFormatSize(audioFormats[0], duration),
+    },
+
+    label: best.format.qualityLabel || `${best.format.height}p`,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// Video information
+// -----------------------------------------------------------------------------
+
+/**
+
+* Obtém os metadados/formatos do vídeo via youtubei.js.
+*
+* Mantém o mesmo retorno esperado pelo restante do downloader.
+  */
+async function getVideoInfo(videoId) {
+  const youtube = await getYouTube();
+
+  const info = await youtube.getInfo(videoId);
+
+  const basic = info.basic_info || {};
+  const streaming = info.streaming_data || {};
+
+  const rawFormats = [
+    ...(streaming.formats || []),
+    ...(streaming.adaptive_formats || []),
+  ];
+
+  const formats = rawFormats.map(normalizeFormat).filter(Boolean);
+
+  return {
+    // Mantém estrutura parecida com ytdl-core
+    videoDetails: {
+      videoId: basic.id || basic.video_id || videoId,
+
+      title: basic.title || "Vídeo sem título",
+
+      lengthSeconds:
+        Number(basic.duration) || Number(basic.duration_seconds) || 0,
+
+      author: basic.author?.name || basic.author || "",
+
+      channelId: basic.channel_id || basic.channel_id || null,
+    },
+
+    formats,
+
+    // Mantém referência interna do youtubei.js
+    _youtubei: {
+      info,
+      videoId,
+    },
+  };
+}
+
+// -----------------------------------------------------------------------------
+// Download
+// -----------------------------------------------------------------------------
+
+/**
+
+* Baixa a mídia escolhida para a pasta temporária.
+*
+* onProgress(downloadedBytes, totalBytes)
+* é chamado durante o download.
+*
+* Um watchdog aborta se não houver progresso por 60s.
+  */
 async function downloadMedia(info, choice, onProgress = () => {}) {
   const details = info.videoDetails;
-  const container = ['mp4', 'm4a', 'webm'].includes(choice.format.container)
+
+  const container = ["mp4", "m4a", "webm"].includes(choice.format.container)
     ? choice.format.container
-    : 'bin';
+    : "bin";
+
   const baseName = sanitizeFilename(details.title);
 
-  fs.mkdirSync(config.tmpDir, { recursive: true });
-  const filePath = path.join(config.tmpDir, `${baseName} [${details.videoId}].${container}`);
+  fs.mkdirSync(config.tmpDir, {
+    recursive: true,
+  });
 
-  await new Promise((resolve, reject) => {
-    const stream = ytdl.downloadFromInfo(info, { format: choice.format });
-    const file = fs.createWriteStream(filePath);
+  const filePath = path.join(
+    config.tmpDir,
+    `${baseName} [${details.videoId}].${container}`,
+  );
+
+  const youtube = await getYouTube();
+
+  const itag = Number(choice.format.itag);
+
+  if (!itag) {
+    throw new Error("Formato do YouTube sem itag válido.");
+  }
+
+  await new Promise(async (resolve, reject) => {
+    let stream = null;
+    let file = null;
     let settled = false;
     let watchdog = null;
+    let downloadedBytes = 0;
 
     const armWatchdog = () => {
       clearTimeout(watchdog);
+
       watchdog = setTimeout(() => {
-        fail(new Error('Download interrompido: sem progresso por 60 segundos.'));
+        fail(
+          new Error("Download interrompido: sem progresso por 60 segundos."),
+        );
       }, 60000);
     };
 
     const fail = (err) => {
       if (settled) return;
+
       settled = true;
+
       clearTimeout(watchdog);
-      stream.destroy();
-      file.destroy();
+
+      try {
+        if (stream && typeof stream.destroy === "function") {
+          stream.destroy();
+        }
+      } catch (_) {}
+
+      try {
+        if (file && !file.destroyed) {
+          file.destroy();
+        }
+      } catch (_) {}
+
       fs.unlink(filePath, () => {});
+
       reject(err);
     };
 
     const done = () => {
       if (settled) return;
+
       settled = true;
+
       clearTimeout(watchdog);
-      resolve(filePath);
+
+      resolve();
     };
 
-    armWatchdog();
-    stream.on('data', armWatchdog);
-    stream.on('progress', (chunk, downloaded, total) => {
-      onProgress(downloaded, total || choice.size || 0);
-    });
-    stream.on('error', fail);
-    file.on('error', fail);
-    file.on('finish', done);
+    try {
+      armWatchdog();
 
-    stream.pipe(file);
+      /**
+       * O youtubei.js retorna Web ReadableStream.
+       *
+       * Node moderno suporta Readable.fromWeb().
+       */
+      const webStream = await youtube.download(details.videoId, {
+        itag,
+      });
+
+      if (!webStream) {
+        throw new Error("youtubei.js não retornou um stream de download.");
+      }
+
+      if (typeof webStream.getReader !== "function") {
+        throw new Error("Stream retornado pelo youtubei.js é inválido.");
+      }
+
+      const { Readable } = require("stream");
+
+      stream = Readable.fromWeb(webStream);
+
+      file = fs.createWriteStream(filePath);
+
+      stream.on("data", (chunk) => {
+        downloadedBytes += chunk.length;
+
+        armWatchdog();
+
+        const total = choice.size || choice.format.contentLength || 0;
+
+        onProgress(downloadedBytes, Number(total) || 0);
+      });
+
+      stream.on("error", fail);
+
+      file.on("error", fail);
+
+      file.on("finish", done);
+
+      stream.pipe(file);
+    } catch (err) {
+      fail(err);
+    }
   });
 
-  return { filePath, size: fs.statSync(filePath).size };
+  return {
+    filePath,
+    size: fs.statSync(filePath).size,
+  };
 }
 
-/** Baixa a thumbnail JPEG do vídeo para anexar ao áudio (ou null se falhar) */
-function downloadThumbnail(videoId) {
-  const url = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
-  fs.mkdirSync(config.tmpDir, { recursive: true });
-  const destPath = path.join(config.tmpDir, `${videoId}-${Date.now()}.jpg`);
+/**
 
-  return new Promise((resolve) => {
-    const file = fs.createWriteStream(destPath);
-    const fail = () => {
-      file.destroy();
-      fs.unlink(destPath, () => resolve(null));
-    };
-    const req = https.get(url, (res) => {
-      if (res.statusCode !== 200) {
-        res.resume();
-        return fail();
-      }
-      res.pipe(file);
-      file.on('finish', () => file.close(() => resolve(destPath)));
-    });
-    req.on('error', fail);
-    req.setTimeout(15000, () => {
-      req.destroy(new Error('timeout'));
-    });
+* Prepara o áudio (m4a) respeitando o limite.
+*
+* Retorna:
+* { files, cleanup, label }
+*
+* ou null.
+  */
+async function prepareAudio(info, opts = {}) {
+  const maxBytes = opts.maxBytes || MAX_UPLOAD_BYTES;
+
+  const choice = pickAudio(info, maxBytes);
+
+  if (!choice) return null;
+
+  const { filePath, size } = await downloadMedia(info, choice, () => {});
+
+  return {
+    files: [
+      {
+        path: filePath,
+        size,
+      },
+    ],
+
+    cleanup: [filePath],
+
+    label: `${choice.format.audioBitrate || "?"}kbps`,
+  };
+}
+
+/**
+
+* Baixa vídeo-only + áudio e mescla com ffmpeg
+* (stream copy, sem recodificar).
+  */
+async function tryAdaptiveMerge(info, { onStage, onProgress }) {
+  const pair = pickAdaptivePair(info);
+
+  if (!pair) return null;
+
+  const details = info.videoDetails;
+
+  onStage(`⏬ Baixando vídeo (${pair.label})...`);
+
+  const video = await downloadMedia(
+    info,
+    pair.video,
+    (d, t) => t && onProgress((d / t) * 85),
+  );
+
+  onStage("⏬ Baixando áudio...");
+
+  const audio = await downloadMedia(
+    info,
+    pair.audio,
+    (d, t) => t && onProgress(85 + (d / t) * 10),
+  );
+
+  onStage(`⚙️ Mesclando vídeo + áudio (${pair.label}) com ffmpeg...`);
+
+  onProgress(96);
+
+  fs.mkdirSync(config.tmpDir, {
+    recursive: true,
   });
+
+  const outPath = path.join(
+    config.tmpDir,
+    `${sanitizeFilename(details.title)} [${details.videoId}].mp4`,
+  );
+
+  try {
+    await ffmpegUtil.mergeAv(video.filePath, audio.filePath, outPath);
+  } catch (err) {
+    deleteFile(outPath);
+    throw err;
+  } finally {
+    deleteFile(video.filePath);
+    deleteFile(audio.filePath);
+  }
+
+  onProgress(99);
+
+  return {
+    filePath: outPath,
+    size: fs.statSync(outPath).size,
+    label: pair.label,
+  };
+}
+
+/**
+
+* Prepara o vídeo para envio:
+*
+* 1. Com ffmpeg:
+* melhor qualidade (H.264) mesclada.
+*
+* 2. Se ficar acima do limite:
+* divide em partes.
+*
+* 3. Sem ffmpeg:
+* formato progressivo compatível.
+*
+* Retorna:
+* { files: [{path,size}], cleanup: [paths], label }
+*
+* ou null.
+  */
+async function prepareVideo(info, opts = {}, callbacks = {}) {
+  const maxBytes = opts.maxBytes || MAX_UPLOAD_BYTES;
+
+  const splitTargetBytes = opts.splitTargetBytes || Math.floor(maxBytes * 0.92);
+
+  const onStage = callbacks.onStage || (() => {});
+
+  const onProgress = callbacks.onProgress || (() => {});
+
+  let merged = null;
+
+  if (opts.ffmpegAvailable) {
+    try {
+      merged = await tryAdaptiveMerge(info, {
+        onStage,
+        onProgress,
+      });
+    } catch (err) {
+      console.error("[adaptive-merge]", err.message);
+
+      onStage("⚠️ Falha ao mesclar em HD; usando formato compatível...");
+    }
+  }
+
+  if (merged) {
+    if (merged.size <= maxBytes) {
+      return {
+        files: [
+          {
+            path: merged.filePath,
+            size: merged.size,
+          },
+        ],
+
+        cleanup: [merged.filePath],
+
+        label: merged.label,
+      };
+    }
+
+    onStage(
+      `✂️ Vídeo com ${formatBytes(merged.size)} — dividindo em partes...`,
+    );
+
+    const parts = await ffmpegUtil.splitFile(merged.filePath, splitTargetBytes);
+
+    const files = parts.map((p) => ({
+      path: p,
+      size: fs.statSync(p).size,
+    }));
+
+    return {
+      files,
+
+      cleanup: [merged.filePath, ...parts],
+
+      label: merged.label,
+    };
+  }
+
+  const choice = pickVideo(info, maxBytes);
+
+  if (!choice) return null;
+
+  const label = choice.format.qualityLabel || "qualidade padrão";
+
+  onStage(`⏬ Baixando vídeo (${label})...`);
+
+  const { filePath, size } = await downloadMedia(
+    info,
+    choice,
+    (d, t) => t && onProgress((d / t) * 100),
+  );
+
+  return {
+    files: [
+      {
+        path: filePath,
+        size,
+      },
+    ],
+
+    cleanup: [filePath],
+
+    label,
+  };
 }
 
 /** Remove arquivo temporário sem lançar erro */
 function deleteFile(filePath) {
-  if (filePath) fs.unlink(filePath, () => {});
+  if (filePath) {
+    fs.unlink(filePath, () => {});
+  }
 }
 
 module.exports = {
   MAX_UPLOAD_BYTES,
+
   getVideoInfo,
+
   pickAudio,
+
   pickVideo,
+
+  pickAdaptivePair,
+
   downloadMedia,
-  downloadThumbnail,
+
+  prepareAudio,
+
+  prepareVideo,
+
   deleteFile,
 };
