@@ -74,6 +74,10 @@ A parte offline (formatação, permissões, URLs) roda em qualquer máquina. A p
 - **`No valid URL to decipher` / "Nenhuma versão de vídeo cabe no limite"**
   O YouTube passou a responder **sem URLs de streaming** ("gated") para clientes web sem **PO Token**. O bot resolve isso com uma **cadeia de clientes** (`ANDROID_VR` → `IOS` → `TV_EMBEDDED` → `WEB`): ele testa cada cliente até obter formatos com URLs utilizáveis e **reaproveita a mesma resposta** no download (`VideoInfo.download`), evitando refazer a requisição com um cliente gated. Aparece no console `[youtube] Formatos obtidos via cliente X.` quando funciona.
 
+- **`403 Forbidden` do googlevideo no download**
+  As URLs de streaming são vinculadas ao **IP** (`ip=...`) e ao **cliente** (`c=...`) que as solicitaram. O bot usa um fetch customizado (`src/utils/yt-fetch.js`) que: define o **User-Agent do cliente** que gerou a URL e, se ainda assim o `googlevideo.com` recusar, **repete o download forçando a família de IP** (IPv6/IPv4) vinculada na URL. No console: `[youtube] Stream respondeu 403; tentando novamente...` seguido de `[youtube] Download OK forçando IPv6.` (ou IPv4).
+
+
 - **Avisos `[YOUTUBEJS][Parser]` / `[YOUTUBEJS][Text]` gigantes no console**
   O YouTube adiciona novos componentes de UI às páginas (ex.: a prateleira de compras `ShoppingTimelyShelfView`) e a lib `youtubei.js` ainda não os conhece. **São inofensivos**: o parser gera a classe dinamicamente e o download continua normal. O bot já instala automaticamente (`src/utils/youtube-quiet.js`) um handler que silencia o ruído e registra cada node desconhecido apenas 1 vez, em 1 linha. Ao atualizar o `youtubei.js` para uma versão que conheça o node, o aviso simplesmente deixa de aparecer.
 

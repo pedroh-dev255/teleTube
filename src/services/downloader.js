@@ -3,6 +3,7 @@ const path = require("path");
 const config = require("../config");
 const ffmpegUtil = require("../utils/ffmpeg");
 const youtubeQuiet = require("../utils/youtube-quiet");
+const { createYtFetch } = require("../utils/yt-fetch");
 const { sanitizeFilename, formatBytes } = require("../utils/format");
 
 const MAX_UPLOAD_BYTES = config.telegram.maxUploadMB * 1024 * 1024;
@@ -27,7 +28,11 @@ async function getYouTube() {
 
       const { Innertube } = await import("youtubei.js");
 
-      return Innertube.create();
+      // Fetch customizado: User-Agent por cliente + retry com a família de IP
+      // correta quando o googlevideo responde 403 (IP/UA não correspondem).
+      const ytFetch = createYtFetch();
+
+      return Innertube.create({ fetch: ytFetch });
     })();
   }
 
