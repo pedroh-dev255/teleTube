@@ -1,0 +1,28 @@
+{
+  "name": "teletube",
+  "version": "1.0.0",
+  "description": "Bot do Telegram para pesquisar vídeos no YouTube, listar com thumbnails e baixar áudio/vídeo",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "node src/tests/index.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "youtube",
+    "downloader"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@distube/ytdl-core": "^4.16.12",
+    "dotenv": "^17.4.2",
+    "node-telegram-bot-api": "^0.66.0",
+    "yt-search": "^2.13.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
