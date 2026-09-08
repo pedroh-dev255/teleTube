@@ -346,13 +346,75 @@ function pickAdaptivePair(info) {
 *
 * Mantém o mesmo retorno esperado pelo restante do downloader.
   */
+/**
+ * Clientes do InnerTube, em ordem de tentativa. Clientes "web" modernos
+ * costumam responder sem URLs de streaming ("gated") quando a requisição
+ * não apresenta um PO Token; ANDROID_VR / IOS / TV_EMBEDDED costumam
+ * devolver URLs diretas.
+ */
+const CLIENT_CHAIN = ["ANDROID_VR", "IOS", "TV_EMBEDDED", "WEB"];
+
+/** Um formato é utilizável se tem URL direta ou cifra para decifrar */
+function hasUsableFormats(info) {
+  const streaming = info && info.streaming_data;
+
+  if (!streaming) return false;
+
+  const all = [
+    ...(streaming.formats || []),
+    ...(streaming.adaptive_formats || []),
+  ];
+
+  return all.some(
+    (f) => f && (f.url || f.signature_cipher || f.signatureCipher || f.cipher),
+  );
+}
+
 async function getVideoInfo(videoId) {
   const youtube = await getYouTube();
 
-  const info = await youtube.getInfo(videoId);
+  let chosen = null;
+  let lastError = null;
 
-  const basic = info.basic_info || {};
-  const streaming = info.streaming_data || {};
+  for (const client of CLIENT_CHAIN) {
+    try {
+      const info = await youtube.getInfo(videoId, { client });
+
+      if (!hasUsableFormats(info)) {
+        lastError = new Error(
+          `Cliente ${client} respondeu sem URLs de streaming (gated).`,
+        );
+
+        console.warn(
+          `[youtube] Cliente ${client}: sem URLs utilizáveis — tentando o próximo...`,
+        );
+
+        continue;
+      }
+
+      chosen = info;
+
+      console.log(`[youtube] Formatos obtidos via cliente ${client}.`);
+
+      break;
+    } catch (err) {
+      lastError = err;
+
+      console.warn(
+        `[youtube] Cliente ${client} falhou: ${err.message} — tentando o próximo...`,
+      );
+    }
+  }
+
+  if (!chosen) {
+    throw new Error(
+      `Nenhum cliente do YouTube devolveu URLs de streaming para este vídeo` +
+        ` (último erro: ${lastError ? lastError.message : "desconhecido"}).`,
+    );
+  }
+
+  const basic = chosen.basic_info || {};
+  const streaming = chosen.streaming_data || {};
 
   const rawFormats = [
     ...(streaming.formats || []),
@@ -380,7 +442,7 @@ async function getVideoInfo(videoId) {
 
     // Mantém referência interna do youtubei.js
     _youtubei: {
-      info,
+      info: chosen,
       videoId,
     },
   };
@@ -417,12 +479,19 @@ async function downloadMedia(info, choice, onProgress = () => {}) {
     `${baseName} [${details.videoId}].${container}`,
   );
 
-  const youtube = await getYouTube();
-
   const itag = Number(choice.format.itag);
 
   if (!itag) {
     throw new Error("Formato do YouTube sem itag válido.");
+  }
+
+  // Baixa usando a MESMA resposta obtida em getVideoInfo (mesmo cliente).
+  // Chamar youtube.download() re-faria o getInfo com o cliente padrão,
+  // que pode estar "gated" (sem URLs de streaming).
+  const ytInfo = info._youtubei && info._youtubei.info;
+
+  if (!ytInfo || typeof ytInfo.download !== "function") {
+    throw new Error("Referência do youtubei.js indisponível para download.");
   }
 
   await new Promise(async (resolve, reject) => {
@@ -484,7 +553,7 @@ async function downloadMedia(info, choice, onProgress = () => {}) {
        *
        * Node moderno suporta Readable.fromWeb().
        */
-      const webStream = await youtube.download(details.videoId, {
+      const webStream = await ytInfo.download({
         itag,
       });
 

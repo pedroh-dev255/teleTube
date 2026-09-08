@@ -71,6 +71,9 @@ A parte offline (formatação, permissões, URLs) roda em qualquer máquina. A p
 
 ## 🐛 Solução de problemas
 
+- **`No valid URL to decipher` / "Nenhuma versão de vídeo cabe no limite"**
+  O YouTube passou a responder **sem URLs de streaming** ("gated") para clientes web sem **PO Token**. O bot resolve isso com uma **cadeia de clientes** (`ANDROID_VR` → `IOS` → `TV_EMBEDDED` → `WEB`): ele testa cada cliente até obter formatos com URLs utilizáveis e **reaproveita a mesma resposta** no download (`VideoInfo.download`), evitando refazer a requisição com um cliente gated. Aparece no console `[youtube] Formatos obtidos via cliente X.` quando funciona.
+
 - **Avisos `[YOUTUBEJS][Parser]` / `[YOUTUBEJS][Text]` gigantes no console**
   O YouTube adiciona novos componentes de UI às páginas (ex.: a prateleira de compras `ShoppingTimelyShelfView`) e a lib `youtubei.js` ainda não os conhece. **São inofensivos**: o parser gera a classe dinamicamente e o download continua normal. O bot já instala automaticamente (`src/utils/youtube-quiet.js`) um handler que silencia o ruído e registra cada node desconhecido apenas 1 vez, em 1 linha. Ao atualizar o `youtubei.js` para uma versão que conheça o node, o aviso simplesmente deixa de aparecer.
 
@@ -79,6 +82,7 @@ A parte offline (formatação, permissões, URLs) roda em qualquer máquina. A p
 
 - **`unable to verify the first certificate`**
   Interferência de firewall/proxy com inspeção SSL no ambiente (típico em rede corporativa). No servidor de produção com acesso direto isso não ocorre.
+
 
 
 ## ⚠️ Limitações e observações
