@@ -42,7 +42,15 @@ app.get('/api/thumb/:videoId', async (req, res) => {
     const cached = library.thumbCachePath(videoId);
     try {
       await fsp.access(cached);
-      return res.sendFile(cached);
+      // dotfiles: 'allow' — o cache fica em .cache/, que o send bloqueia por padrão;
+      // com callback, erros não vazam para o finalhandler (sem stack no terminal)
+      return res.sendFile(
+        cached,
+        { dotfiles: 'allow' },
+        (err) => {
+          if (err && !res.headersSent) res.status(err.statusCode || 500).end();
+        }
+      );
     } catch {
       /* sem cache — busca no YouTube */
     }
@@ -97,7 +105,8 @@ app.delete('/api/library/:fileId', async (req, res) => {
 /* --------- streaming do vídeo --------- */
 
 app.get('/media/:fileId', (req, res) => {
-  const { fileId } = req.params;
+  // o player pede /media/<fileId>.mp4 — aceitamos com ou sem a extensão
+  const fileId = path.basename(req.params.fileId, path.extname(req.params.fileId));
   if (!library.isValidFileId(fileId)) return res.status(400).end();
   // sendFile (send) suporta Range — permite seek no player
   res.sendFile(library.videoPath(fileId), (err) => {
