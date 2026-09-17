@@ -1,0 +1,34 @@
+{
+  "name": "teletube",
+  "version": "1.0.0",
+  "description": "Busque, baixe e assista a vídeos do YouTube sem sair do site — todas as requisições passam pelo servidor.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pedroh-dev255/teleTube.git"
+  },
+  "keywords": [
+    "youtube",
+    "downloader",
+    "express",
+    "ytdl-core",
+    "video"
+  ],
+  "author": "pedroh-dev255",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/pedroh-dev255/teleTube/issues"
+  },
+  "homepage": "https://github.com/pedroh-dev255/teleTube#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@distube/ytdl-core": "^4.16.12",
+    "express": "^5.2.1"
+  }
+}

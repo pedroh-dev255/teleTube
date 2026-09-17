@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>teleTube — busque, baixe e assista</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%234f8cff'/><path d='M26 20l18 12-18 12z' fill='white'/></svg>">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+  <header class="topbar">
+    <button class="brand" id="brandHome" title="teleTube">
+      <span class="brand-badge">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="#fff"><path d="M8 5v14l11-7z"/></svg>
+      </span>
+      <span class="brand-name">tele<em>Tube</em></span>
+    </button>
+
+    <nav class="tabs" id="tabs">
+      <button class="tab active" data-tab="search">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/></svg>
+        Buscar
+      </button>
+      <button class="tab" data-tab="library">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>
+        Biblioteca
+        <span class="count hidden" id="libCount">0</span>
+      </button>
+      <span class="tab-indicator" id="tabIndicator"></span>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ============ BUSCA ============ -->
+    <section class="view active" id="view-search">
+      <form class="searchbar" id="searchForm" autocomplete="off">
+        <svg class="search-ico" viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/></svg>
+        <input id="searchInput" type="text" placeholder="O que você quer assistir hoje?" spellcheck="false">
+        <button type="submit" class="btn primary" id="searchBtn">Buscar</button>
+      </form>
+
+      <div class="hero" id="hero">
+        <div class="hero-logo">
+          <svg viewBox="0 0 24 24" width="38" height="38" fill="#fff"><path d="M8 5v14l11-7z"/></svg>
+        </div>
+        <h1>Busque, baixe e assista.<br><span>Sem sair daqui.</span></h1>
+        <p class="muted">O navegador nunca conversa com o YouTube — quem busca e baixa é o seu servidor.</p>
+        <div class="chips" id="chips">
+          <button type="button" data-q="lofi hip hop">🎧 Lofi</button>
+          <button type="button" data-q="trailer 2026">🎬 Trailers</button>
+          <button type="button" data-q="aula javascript">💻 Programação</button>
+          <button type="button" data-q="podcast brasileiro">🎙️ Podcasts</button>
+          <button type="button" data-q="musica acustica">🎸 Acústico</button>
+        </div>
+      </div>
+
+      <div class="results" id="results"></div>
+
+      <div class="empty hidden" id="resultsEmpty">
+        <div class="empty-ico">🔍</div>
+        <h3>Nenhum resultado</h3>
+        <p class="muted">Tente outro termo de busca.</p>
+      </div>
+    </section>
+
+    <!-- ============ ASSISTIR ============ -->
+    <section class="view" id="view-watch">
+      <button class="backlink" id="backFromWatch">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+        Voltar
+      </button>
+
+      <div class="player-card">
+        <video id="player" controls playsinline preload="metadata"></video>
+        <div class="watch-meta">
+          <h2 class="watch-title" id="watchTitle"></h2>
+          <div class="watch-sub">
+            <span class="watch-author" id="watchAuthor"></span>
+            <span class="dot">•</span>
+            <span id="watchStats"></span>
+            <span class="badge" id="watchQuality"></span>
+          </div>
+          <div class="watch-actions">
+            <button class="btn danger ghost" id="watchDelete">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+              Excluir da biblioteca
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ BIBLIOTECA ============ -->
+    <section class="view" id="view-library">
+      <div class="library-head">
+        <h2>Biblioteca</h2>
+        <span class="muted small" id="libMeta"></span>
+      </div>
+      <div class="results" id="libraryList"></div>
+
+      <div class="empty hidden" id="libraryEmpty">
+        <div class="empty-ico">📭</div>
+        <h3>Sua biblioteca está vazia</h3>
+        <p class="muted">Busque um vídeo e clique nele para baixar e assistir.</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============ MODAL DE DOWNLOAD ============ -->
+  <div class="overlay hidden" id="dlOverlay" role="dialog" aria-modal="true">
+    <div class="dl-card">
+      <div class="dl-thumb"><img id="dlThumb" alt=""></div>
+      <div class="dl-body">
+        <h3 id="dlTitle">Preparando download…</h3>
+        <p class="muted small" id="dlSub"></p>
+        <div class="progress"><div class="progress-fill" id="dlBar"></div></div>
+        <div class="dl-row">
+          <span class="dl-percent" id="dlPercent">0%</span>
+          <span class="muted small" id="dlBytes"></span>
+          <span class="muted small" id="dlSpeed"></span>
+        </div>
+        <button class="btn danger ghost" id="dlCancel">Cancelar download</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
