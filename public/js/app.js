@@ -24,11 +24,27 @@ const els = {
   brandHome: $('#brandHome'),
   backFromWatch: $('#backFromWatch'),
   player: $('#player'),
+  audioPlayer: $('#audioPlayer'),
   watchTitle: $('#watchTitle'),
   watchAuthor: $('#watchAuthor'),
   watchStats: $('#watchStats'),
   watchQuality: $('#watchQuality'),
+  watchDesc: $('#watchDesc'),
+  watchDownload: $('#watchDownload'),
   watchDelete: $('#watchDelete'),
+  infoOverlay: $('#infoOverlay'),
+  infoClose: $('#infoClose'),
+  infoThumb: $('#infoThumb'),
+  infoTitle: $('#infoTitle'),
+  infoSub: $('#infoSub'),
+  infoDesc: $('#infoDesc'),
+  infoLoading: $('#infoLoading'),
+  infoOptions: $('#infoOptions'),
+  kindSeg: $('#kindSeg'),
+  qualityBox: $('#qualityBox'),
+  qualGrid: $('#qualGrid'),
+  infoSummary: $('#infoSummary'),
+  infoStart: $('#infoStart'),
   dlOverlay: $('#dlOverlay'),
   dlThumb: $('#dlThumb'),
   dlTitle: $('#dlTitle'),
@@ -49,6 +65,10 @@ const state = {
   watchFile: null,
   currentJob: null,
   pollTimer: null,
+  infoVideo: null,
+  infoData: null,
+  infoKind: 'video',
+  infoQuality: null,
 };
 
 /* ------------------- utilidades ------------------- */
@@ -89,6 +109,16 @@ function fmtDate(iso) {
   );
 }
 
+function fmtViews(n) {
+  const num = Number(n);
+  if (!num && num !== 0) return '';
+  return `${new Intl.NumberFormat('pt-BR').format(num)} visualizações`;
+}
+
+function oneLine(s) {
+  return String(s || '').replace(/\s+/g, ' ').trim();
+}
+
 function toast(msg, type = 'info') {
   const el = document.createElement('div');
   el.className = `toast ${type}`;
@@ -123,7 +153,10 @@ function switchTab(tab, { force = false } = {}) {
   });
   moveIndicator();
 
-  if (leavingWatch) els.player.pause();
+  if (leavingWatch) {
+    els.player.pause();
+    els.audioPlayer.pause();
+  }
   if (tab === 'library') refreshLibrary();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -193,7 +226,7 @@ function resultRow(v, { delay = 0 } = {}) {
     </div>`;
 
   thumbPlaceholder(row);
-  row.addEventListener('click', () => startDownload(v));
+  row.addEventListener('click', () => openInfoModal(v));
   return row;
 }
 
@@ -235,7 +268,142 @@ async function onSearch(e) {
   }
 }
 
-/* ------------------- download ------------------- */
+/* ------------------- prévia / opções de download ------------------- */
+
+function openInfoModal(video) {
+  // já está na biblioteca? abre direto no player
+  const known = state.library.find((m) => m.videoId === video.videoId);
+  if (known) {
+    toast('Este vídeo já está na biblioteca', 'info');
+    return openWatch(known.fileId);
+  }
+
+  state.infoVideo = video;
+  state.infoData = null;
+  state.infoKind = 'video';
+  state.infoQuality = null;
+
+  els.infoThumb.src = `/api/thumb/${video.videoId}`;
+  els.infoThumb.style.opacity = '';
+  els.infoTitle.textContent = video.title || 'Carregando…';
+  renderInfoSub({
+    author: video.author || '—',
+    views: video.views || '',
+    published: video.published || '',
+    duration: video.duration || '',
+  });
+  els.infoDesc.textContent = oneLine(video.snippet) || 'Sem descrição.';
+  els.infoLoading.classList.remove('hidden');
+  els.infoOptions.classList.add('hidden');
+  els.qualGrid.innerHTML = '';
+  delete els.qualGrid.dataset.videoId;
+
+  els.infoOverlay.classList.remove('hidden');
+  requestAnimationFrame(() => els.infoOverlay.classList.add('show'));
+
+  loadInfoDetails(video.videoId);
+}
+
+function closeInfo() {
+  els.infoOverlay.classList.remove('show');
+  setTimeout(() => els.infoOverlay.classList.add('hidden'), 300);
+}
+
+function renderInfoSub({ author, views, published, duration }) {
+  const parts = [author, views, published, duration].filter(Boolean).map(escapeHtml);
+  els.infoSub.innerHTML = parts.join('<span class="dot">•</span>');
+}
+
+/** Busca no servidor os dados completos do vídeo (descrição + resoluções). */
+async function loadInfoDetails(videoId) {
+  try {
+    const res = await fetch(`/api/video/${videoId}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Falha ao obter os dados do vídeo');
+    // o modal pode ter sido fechado/trocado enquanto a requisição viajava
+    if (!state.infoVideo || state.infoVideo.videoId !== videoId) return;
+
+    state.infoData = data;
+    els.infoTitle.textContent = data.title || 'Sem título';
+    renderInfoSub({
+      author: data.author || '—',
+      views: fmtViews(data.views),
+      published: data.published || '',
+      duration: fmtDuration(data.duration),
+    });
+    els.infoDesc.textContent = data.description || 'Sem descrição.';
+    els.infoLoading.classList.add('hidden');
+    els.infoOptions.classList.remove('hidden');
+    renderInfoOptions();
+  } catch (err) {
+    if (state.infoVideo && state.infoVideo.videoId === videoId) closeInfo();
+    toast(err.message, 'error');
+  }
+}
+
+/** Renderiza os chips de resolução (somente as disponíveis no YouTube). */
+function renderInfoOptions() {
+  const data = state.infoData;
+  if (!data) return;
+
+  els.kindSeg.querySelectorAll('.seg-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.kind === state.infoKind);
+  });
+  els.qualityBox.classList.toggle('hidden', state.infoKind === 'audio');
+
+  if (state.infoKind === 'video') {
+    const list = (data.resolutions || []).length
+      ? data.resolutions
+      : [{ height: 0, label: 'Melhor', bytes: 0 }];
+    // só reconstrói os chips quando o vídeo do modal mudou
+    if (els.qualGrid.dataset.videoId !== state.infoVideo.videoId) {
+      els.qualGrid.innerHTML = '';
+      list.forEach((r, i) => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'qual-chip';
+        chip.dataset.height = r.height || '';
+        chip.innerHTML =
+          `<strong>${escapeHtml(r.height ? r.label : 'Melhor')}</strong>` +
+          (r.bytes ? `<span>~${fmtBytes(r.bytes)}</span>` : '<span>&nbsp;</span>');
+        chip.addEventListener('click', () => {
+          state.infoQuality = r.height || null;
+          els.qualGrid
+            .querySelectorAll('.qual-chip')
+            .forEach((c) => c.classList.toggle('active', c === chip));
+          updateInfoSummary();
+        });
+        els.qualGrid.appendChild(chip);
+        if (i === 0) {
+          chip.classList.add('active');
+          state.infoQuality = r.height || null;
+        }
+      });
+      els.qualGrid.dataset.videoId = state.infoVideo.videoId;
+    } else {
+      // remarca o chip ativo (mantém a escolha entre trocas Vídeo/Áudio)
+      els.qualGrid.querySelectorAll('.qual-chip').forEach((c) => {
+        c.classList.toggle('active', (c.dataset.height || null) === (state.infoQuality || null));
+      });
+    }
+  }
+  updateInfoSummary();
+}
+
+function updateInfoSummary() {
+  if (state.infoKind === 'audio') {
+    els.infoSummary.textContent = 'MP3 • melhor qualidade de áudio disponível';
+    return;
+  }
+  const parts = [state.infoQuality ? `${state.infoQuality}p` : 'Melhor disponível'];
+  const res = ((state.infoData && state.infoData.resolutions) || []).find(
+    (r) => (r.height || null) === (state.infoQuality || null)
+  );
+  if (res && res.bytes) parts.push(`~${fmtBytes(res.bytes)} aproximados`);
+  els.infoSummary.textContent = parts.join(' • ');
+}
+
+/* ------------------- download (progresso) ------------------- */
 
 function openModal(video) {
   els.dlThumb.src = `/api/thumb/${video.videoId}`;
@@ -263,27 +431,37 @@ function updateModal(job) {
     ? `${fmtBytes(job.received)} de ${fmtBytes(job.total)}`
     : fmtBytes(job.received);
   if (job.title) els.dlTitle.textContent = job.title;
-  if (job.author) els.dlSub.textContent = job.author;
+
+  const kindLabel =
+    job.kind === 'audio'
+      ? 'Somente áudio'
+      : job.quality
+        ? `${job.quality}p`
+        : 'Melhor disponível';
+  els.dlSub.textContent = [job.author, kindLabel].filter(Boolean).join(' • ');
 }
 
-async function startDownload(video) {
+async function startDownload(video, { kind = 'video', quality = null } = {}) {
   if (state.currentJob) {
     toast('Aguarde: já existe um download em andamento', 'warn');
     return;
   }
 
-  const known = state.library.find((m) => m.videoId === video.videoId);
+  const known = state.library.find(
+    (m) => m.videoId === video.videoId && (m.kind || 'video') === kind
+  );
   if (known) {
     toast('Este vídeo já está na biblioteca', 'info');
     return openWatch(known.fileId);
   }
 
+  closeInfo();
   openModal(video);
   try {
     const res = await fetch('/api/downloads', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ videoId: video.videoId }),
+      body: JSON.stringify({ videoId: video.videoId, kind, quality }),
     });
     const job = await res.json();
     if (!res.ok) throw new Error(job.error || 'Falha ao iniciar o download');
@@ -296,6 +474,7 @@ async function startDownload(video) {
     }
 
     state.currentJob = job;
+    updateModal(job);
     pollJob(job.id);
   } catch (err) {
     closeModal();
@@ -380,7 +559,14 @@ async function openWatch(fileId) {
     }
 
     state.watchFile = meta;
-    els.player.src = `/media/${meta.fileId}.mp4`;
+    const isAudio = meta.kind === 'audio';
+    const container = meta.container || 'mp4';
+
+    els.player.classList.toggle('hidden', isAudio);
+    els.audioPlayer.classList.toggle('hidden', !isAudio);
+    const player = isAudio ? els.audioPlayer : els.player;
+    player.src = `/media/${meta.fileId}.${container}`;
+
     els.watchTitle.textContent = meta.title;
     els.watchAuthor.textContent = meta.author || '—';
     els.watchStats.textContent = [
@@ -388,10 +574,20 @@ async function openWatch(fileId) {
       fmtBytes(meta.sizeBytes),
       `baixado em ${fmtDate(meta.downloadedAt)}`,
     ].filter(Boolean).join(' • ');
-    els.watchQuality.textContent = (meta.quality || 'auto').toUpperCase();
+    els.watchQuality.textContent = isAudio
+      ? `ÁUDIO • ${(container || 'mp3').toUpperCase()}`
+      : (meta.quality || 'auto').toUpperCase();
+
+    els.watchDownload.href = `/api/library/${meta.fileId}/download`;
+    els.watchDownload.setAttribute('download', '');
+
+    const desc = oneLine(meta.description);
+    els.watchDesc.textContent = desc;
+    els.watchDesc.classList.toggle('hidden', !desc);
+    els.watchDesc.classList.remove('open');
 
     switchTab('watch', { force: true });
-    els.player.play().catch(() => {});
+    player.play().catch(() => {});
   } catch (err) {
     toast(err.message, 'error');
   }
@@ -426,6 +622,12 @@ function libraryRow(meta, { delay = 0 } = {}) {
   row.style.animationDelay = `${delay}ms`;
   row.dataset.fileId = meta.fileId;
 
+  const isAudio = meta.kind === 'audio';
+  const kindLabel = isAudio
+    ? `Áudio ${(meta.container || 'mp3').toUpperCase()}`
+    : (meta.quality || 'auto').toUpperCase();
+  const desc = oneLine(meta.description).slice(0, 400);
+
   row.innerHTML = `
     <div class="thumb">
       <img loading="lazy" src="/api/thumb/${meta.videoId}" alt="">
@@ -436,17 +638,23 @@ function libraryRow(meta, { delay = 0 } = {}) {
       <div class="row-channel">
         <span class="avatar">${escapeHtml((meta.author || '?').charAt(0).toUpperCase())}</span>
         <span>${escapeHtml(meta.author || '—')}</span>
+        ${isAudio ? '<span class="badge">Áudio</span>' : ''}
       </div>
       <div class="row-meta">
-        ${[fmtBytes(meta.sizeBytes), fmtDate(meta.downloadedAt), (meta.quality || 'auto').toUpperCase()]
+        ${[fmtBytes(meta.sizeBytes), fmtDate(meta.downloadedAt), kindLabel]
           .filter(Boolean).map(escapeHtml).join(' • ')}
       </div>
+      ${desc ? `<p class="row-snippet">${escapeHtml(desc)}</p>` : ''}
     </div>
     <div class="row-actions">
       <button class="btn primary small act-play">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
         Assistir
       </button>
+      <a class="btn ghost small act-dl" href="/api/library/${meta.fileId}/download" download>
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12 3v10.59L7.71 9.29 6.3 10.71 12 16.41l5.7-5.7-1.41-1.42L12 13.59V3z"/><path d="M5 19h14v2H5z"/></svg>
+        Baixar arquivo
+      </a>
       <button class="btn danger ghost small act-del">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
         <span>Excluir</span>
@@ -475,7 +683,7 @@ function libraryRow(meta, { delay = 0 } = {}) {
   });
 
   row.addEventListener('click', (e) => {
-    if (e.target.closest('button')) return;
+    if (e.target.closest('button') || e.target.closest('a')) return;
     openWatch(meta.fileId);
   });
   return row;
@@ -506,8 +714,11 @@ async function deleteFile(fileId, { fromWatch = false, rowEl = null } = {}) {
 
     if (fromWatch) {
       els.player.pause();
+      els.audioPlayer.pause();
       els.player.removeAttribute('src');
+      els.audioPlayer.removeAttribute('src');
       els.player.load();
+      els.audioPlayer.load();
       state.watchFile = null;
       switchTab('library', { force: true });
     }
@@ -533,12 +744,15 @@ function init() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
 
-  els.chips.addEventListener('click', (e) => {
-    const chip = e.target.closest('button[data-q]');
-    if (!chip) return;
-    els.searchInput.value = chip.dataset.q;
-    els.searchForm.requestSubmit();
-  });
+  // #chips é opcional: só liga se existir no HTML (não quebra o init se ausente)
+  if (els.chips) {
+    els.chips.addEventListener('click', (e) => {
+      const chip = e.target.closest('button[data-q]');
+      if (!chip) return;
+      els.searchInput.value = chip.dataset.q;
+      els.searchForm.requestSubmit();
+    });
+  }
 
   els.backFromWatch.addEventListener('click', () => {
     switchTab(state.returnTab || 'search', { force: true });
@@ -548,6 +762,29 @@ function init() {
 
   els.watchDelete.addEventListener('click', () => {
     if (state.watchFile) deleteFile(state.watchFile.fileId, { fromWatch: true });
+  });
+
+  els.watchDesc.addEventListener('click', () => els.watchDesc.classList.toggle('open'));
+
+  /* -------- modal de prévia -------- */
+  els.infoClose.addEventListener('click', closeInfo);
+  els.infoOverlay.addEventListener('click', (e) => {
+    if (e.target === els.infoOverlay) closeInfo();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !els.infoOverlay.classList.contains('hidden')) closeInfo();
+  });
+
+  els.kindSeg.addEventListener('click', (e) => {
+    const btn = e.target.closest('.seg-btn');
+    if (!btn || btn.dataset.kind === state.infoKind) return;
+    state.infoKind = btn.dataset.kind;
+    renderInfoOptions();
+  });
+
+  els.infoStart.addEventListener('click', () => {
+    if (!state.infoVideo) return;
+    startDownload(state.infoVideo, { kind: state.infoKind, quality: state.infoQuality });
   });
 
   window.addEventListener('resize', moveIndicator);

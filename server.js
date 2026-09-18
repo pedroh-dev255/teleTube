@@ -10,7 +10,12 @@ const fsp = require('fs/promises');
 const express = require('express');
 
 const { searchVideos, fetchThumbnail } = require('./lib/youtube');
-const { createDownloadJob, getJob, cancelJob } = require('./lib/downloader');
+const {
+  createDownloadJob,
+  getVideoInfo,
+  getJob,
+  cancelJob,
+} = require('./lib/downloader');
 const library = require('./lib/library');
 
 const app = express();
@@ -62,12 +67,27 @@ app.get('/api/thumb/:videoId', async (req, res) => {
   }
 });
 
+/* --------- detalhes do vídeo (prévia do modal de download) --------- */
+
+app.get('/api/video/:videoId', async (req, res) => {
+  try {
+    const info = await getVideoInfo(req.params.videoId);
+    res.json(info);
+  } catch (err) {
+    res
+      .status(400)
+      .json({ error: err.message || 'Não foi possível obter os dados do vídeo' });
+  }
+});
+
 /* ------------- downloads --------------- */
 
 app.post('/api/downloads', async (req, res) => {
-  const videoId = (req.body && req.body.videoId) || '';
+  const body = req.body || {};
+  const videoId = body.videoId || '';
+  const options = { kind: body.kind, quality: body.quality };
   try {
-    const job = await createDownloadJob(videoId);
+    const job = await createDownloadJob(videoId, options);
     res.json(job);
   } catch (err) {
     res.status(400).json({ error: err.message || 'Não foi possível iniciar o download' });
@@ -96,20 +116,54 @@ app.get('/api/library/:fileId', async (req, res) => {
   res.json(meta);
 });
 
+/* Envia o arquivo do servidor para o dispositivo do usuário (attachment). */
+app.get('/api/library/:fileId/download', async (req, res) => {
+  const meta = await library.readMeta(req.params.fileId);
+  if (!meta) return res.status(404).json({ error: 'Vídeo não encontrado' });
+
+  const container = meta.container || 'mp4';
+  const file = library.filePath(meta.fileId, container);
+  try {
+    await fsp.access(file);
+  } catch {
+    return res.status(404).json({ error: 'Arquivo não encontrado no servidor' });
+  }
+
+  res.download(file, safeFilename(meta.title, container), (err) => {
+    if (err && !res.headersSent) res.status(err.statusCode || 500).end();
+  });
+});
+
 app.delete('/api/library/:fileId', async (req, res) => {
   const ok = await library.remove(req.params.fileId);
   if (!ok) return res.status(404).json({ error: 'Vídeo não encontrado' });
   res.json({ ok: true });
 });
 
-/* --------- streaming do vídeo --------- */
+/* Nome seguro de arquivo para o download no dispositivo (sem path traversal). */
+function safeFilename(title, container) {
+  const base = String(title || 'video')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // remove acentos
+    .replace(/[^\w\s.-]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  return `${base || 'video'}.${container}`;
+}
 
-app.get('/media/:fileId', (req, res) => {
-  // o player pede /media/<fileId>.mp4 — aceitamos com ou sem a extensão
+/* --------- streaming do vídeo/áudio --------- */
+
+app.get('/media/:fileId', async (req, res) => {
+  // o player pede /media/<fileId>.<container> — aceitamos com ou sem a extensão
   const fileId = path.basename(req.params.fileId, path.extname(req.params.fileId));
   if (!library.isValidFileId(fileId)) return res.status(400).end();
+
+  // resolve o container real pelo metadado (mp4, mp3, m4a…)
+  const meta = await library.readMeta(fileId);
+  const container = (meta && meta.container) || 'mp4';
   // sendFile (send) suporta Range — permite seek no player
-  res.sendFile(library.videoPath(fileId), (err) => {
+  res.sendFile(library.filePath(fileId, container), (err) => {
     if (err && !res.headersSent) res.status(err.statusCode || 500).end();
   });
 });

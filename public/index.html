@@ -34,12 +34,6 @@
   <main>
     <!-- ============ BUSCA ============ -->
     <section class="view active" id="view-search">
-      <form class="searchbar" id="searchForm" autocomplete="off">
-        <svg class="search-ico" viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/></svg>
-        <input id="searchInput" type="text" placeholder="O que você quer assistir hoje?" spellcheck="false">
-        <button type="submit" class="btn primary" id="searchBtn">Buscar</button>
-      </form>
-
       <div class="hero" id="hero">
         <div class="hero-logo">
           <svg viewBox="0 0 24 24" width="38" height="38" fill="#fff"><path d="M8 5v14l11-7z"/></svg>
@@ -47,6 +41,12 @@
         <h1>Busque, baixe e assista.<br><span>Sem sair daqui.</span></h1>
         <p class="muted">O navegador nunca conversa com o YouTube — quem busca e baixa é o seu servidor.</p>
       </div>
+
+      <form class="searchbar" id="searchForm" autocomplete="off">
+        <svg class="search-ico" viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/></svg>
+        <input id="searchInput" type="text" placeholder="O que você quer assistir hoje?" spellcheck="false">
+        <button type="submit" class="btn primary" id="searchBtn">Buscar</button>
+      </form>
 
       <div class="results" id="results"></div>
 
@@ -66,6 +66,7 @@
 
       <div class="player-card">
         <video id="player" controls playsinline preload="metadata"></video>
+        <audio id="audioPlayer" controls preload="metadata" class="hidden"></audio>
         <div class="watch-meta">
           <h2 class="watch-title" id="watchTitle"></h2>
           <div class="watch-sub">
@@ -74,7 +75,12 @@
             <span id="watchStats"></span>
             <span class="badge" id="watchQuality"></span>
           </div>
+          <p class="watch-desc hidden" id="watchDesc"></p>
           <div class="watch-actions">
+            <a class="btn ghost small" id="watchDownload" href="#" download>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 3v10.59L7.71 9.29 6.3 10.71 12 16.41l5.7-5.7-1.41-1.42L12 13.59V3z"/><path d="M5 19h14v2H5z"/></svg>
+              Baixar arquivo
+            </a>
             <button class="btn danger ghost" id="watchDelete">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
               Excluir da biblioteca
@@ -99,6 +105,47 @@
       </div>
     </section>
   </main>
+
+  <!-- ============ MODAL DE PRÉVIA / OPÇÕES DE DOWNLOAD ============ -->
+  <div class="overlay hidden" id="infoOverlay" role="dialog" aria-modal="true">
+    <div class="info-card">
+      <button class="info-close" id="infoClose" title="Fechar">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+      <div class="dl-thumb"><img id="infoThumb" alt=""></div>
+      <div class="info-body">
+        <h3 id="infoTitle">Carregando…</h3>
+        <div class="watch-sub info-sub" id="infoSub"></div>
+        <p class="info-desc" id="infoDesc"></p>
+        <p class="info-loading muted small" id="infoLoading">Buscando dados do vídeo…</p>
+
+        <div class="info-options hidden" id="infoOptions">
+          <div class="opt-label">Tipo de download</div>
+          <div class="seg" id="kindSeg">
+            <button type="button" class="seg-btn active" data-kind="video">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M17 10.5V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11l-4 4z"/></svg>
+              Vídeo
+            </button>
+            <button type="button" class="seg-btn" data-kind="audio">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
+              Somente áudio
+            </button>
+          </div>
+
+          <div id="qualityBox">
+            <div class="opt-label">Resolução</div>
+            <div class="qual-grid" id="qualGrid"></div>
+          </div>
+
+          <p class="info-summary muted small" id="infoSummary"></p>
+          <button class="btn primary" id="infoStart">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 3v10.59L7.71 9.29 6.3 10.71 12 16.41l5.7-5.7-1.41-1.42L12 13.59V3z"/><path d="M5 19h14v2H5z"/></svg>
+            <span>Baixar</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- ============ MODAL DE DOWNLOAD ============ -->
   <div class="overlay hidden" id="dlOverlay" role="dialog" aria-modal="true">

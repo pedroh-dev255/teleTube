@@ -424,8 +424,9 @@ main {
 .row-snippet {
   color: var(--muted-2);
   font-size: .8rem;
+  line-height: 1.45;
   display: -webkit-box;
-  -webkit-line-clamp: 1;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -579,8 +580,6 @@ main {
 .watch-author { color: #cfd7e6; font-weight: 600; }
 .dot { color: var(--muted-2); }
 
-.watch-actions { margin-top: 6px; }
-
 /* ---------------- modal de download ---------------- */
 
 .overlay {
@@ -693,6 +692,202 @@ main {
 }
 
 .dl-body .btn { align-self: flex-start; }
+
+/* ---------------- modal de prévia / opções ---------------- */
+
+.info-card {
+  position: relative;
+  width: min(560px, 94vw);
+  max-height: 92vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, .55);
+  transform: translateY(16px) scale(.96);
+  transition: transform .35s cubic-bezier(.2, .9, .3, 1.15);
+}
+
+.overlay.show .info-card { transform: none; }
+
+.info-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(11, 14, 20, .72);
+  color: #fff;
+  cursor: pointer;
+  transition: background .2s ease, transform .2s ease;
+}
+
+.info-close:hover { background: var(--danger); transform: rotate(90deg); }
+
+.info-body {
+  position: relative;
+  margin-top: -14px;
+  padding: 16px 22px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.info-body h3 {
+  font-size: 1.02rem;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.info-sub { margin-top: -6px; }
+
+.info-desc {
+  color: var(--muted);
+  font-size: .86rem;
+  line-height: 1.5;
+  white-space: pre-line;
+  max-height: 120px;
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-width: thin;
+}
+
+.info-desc:empty { display: none; }
+
+.info-loading { margin: 0; }
+
+.info-options {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.opt-label {
+  font-size: .74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+  color: var(--muted-2);
+}
+
+.seg {
+  display: flex;
+  gap: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px;
+}
+
+.seg-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 8px 14px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: .88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .25s ease, color .25s ease;
+}
+
+.seg-btn:hover { color: #cfd7e6; }
+
+.seg-btn.active {
+  background: linear-gradient(135deg, rgba(79, 140, 255, .3), rgba(45, 212, 191, .24));
+  border: 1px solid rgba(79, 140, 255, .5);
+  color: #fff;
+}
+
+.qual-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.qual-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 86px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color .2s ease, background .2s ease, color .2s ease, transform .2s ease;
+}
+
+.qual-chip:hover { border-color: var(--accent); color: #cfd7e6; transform: translateY(-1px); }
+
+.qual-chip.active {
+  border-color: rgba(79, 140, 255, .65);
+  background: rgba(79, 140, 255, .14);
+  color: #fff;
+  box-shadow: 0 0 0 3px rgba(79, 140, 255, .12);
+}
+
+.qual-chip strong { font-size: .92rem; }
+.qual-chip span { font-size: .72rem; color: var(--muted-2); }
+
+.info-summary { margin: 0; }
+
+.info-options .btn.primary { align-self: flex-start; }
+
+/* ---------------- player de áudio / descrição ---------------- */
+
+#audioPlayer {
+  display: block;
+  width: 100%;
+  padding: 26px 18px;
+  background: linear-gradient(135deg, #1b2233, #131826);
+  outline: none;
+}
+
+.watch-desc {
+  color: var(--muted);
+  font-size: .88rem;
+  line-height: 1.55;
+  cursor: pointer;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.watch-desc.open {
+  -webkit-line-clamp: unset;
+  overflow-y: auto;
+  max-height: 260px;
+  cursor: default;
+}
+
+.watch-actions {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
 
 /* ---------------- toasts ---------------- */
 

@@ -4,11 +4,12 @@ Site para **buscar, baixar e assistir** a vídeos do YouTube sem sair da aplica�
 
 ## Como funciona
 
-- **Busca** → o servidor consulta a página de resultados do YouTube, extrai os dados dos vídeos (`ytInitialData`) e devolve JSON pronto para a UI (título, canal, views, data, duração e thumbnail).
+- **Busca** → o servidor consulta a página de resultados do YouTube, extrai os dados dos vídeos (`ytInitialData`) e devolve JSON pronto para a UI (título, canal, views, data, duração, descrição e thumbnail).
 - **Thumbnails** → baixadas pelo servidor e servidas em proxy (`/api/thumb/:videoId`), com cache em disco (`.cache/thumbs`).
-- **Download** → ao clicar em um vídeo, o servidor baixa o vídeo com `youtube-dl-exec` (wrapper do [yt-dlp](https://github.com/yt-dlp/yt-dlp)) em MP4 H.264/AAC até 720p e grava em `./downloads`, com metadados em JSON ao lado. Se o **ffmpeg** estiver disponível, vídeo e áudio são baixados em streams separados (melhor qualidade) e mesclados em MP4; sem ffmpeg, cai para um formato progressivo (vídeo+áudio no mesmo arquivo).
-- **Assistir** → o arquivo é servido com suporte a `Range` (`/media/:fileId.mp4`), permitindo seek no player.
-- **Biblioteca** → aba com todos os vídeos baixados (tamanho, data, qualidade), com excluir (confirmação em 2 cliques) e assistir.
+- **Prévia** → clicar em um resultado **não** inicia o download: abre um modal com thumbnail, dados do vídeo, **descrição completa**, escolha entre **vídeo** ou **somente áudio (MP3)** e os chips de **resolução realmente disponíveis** (com tamanho estimado de cada uma).
+- **Download** → o servidor baixa com `youtube-dl-exec` (wrapper do [yt-dlp](https://github.com/yt-dlp/yt-dlp)) na resolução escolhida (MP4 H.264/AAC) ou extrai o áudio para MP3, gravando em `./downloads` com metadados em JSON ao lado. Se o **ffmpeg** estiver disponível, vídeo e áudio são baixados em streams separados (melhor qualidade) e mesclados em MP4; sem ffmpeg, cai para um formato progressivo (vídeo+áudio no mesmo arquivo) e o áudio é entregue cru (m4a).
+- **Assistir** → o arquivo é servido com suporte a `Range` (`/media/:fileId.<container>`), permitindo seek no player (vídeo no `<video>`, áudio no `<audio>`).
+- **Biblioteca** → aba com todos os itens baixados (tamanho, data, qualidade, descrição e badge de áudio), com **assistir**, **baixar o arquivo do servidor para o dispositivo** (`Content-Disposition: attachment`, nome de arquivo amigável) e excluir (confirmação em 2 cliques). O mesmo vídeo pode existir como vídeo e como áudio (itens separados).
 
 ## Rodando
 
@@ -41,12 +42,15 @@ downloads/           → vídeos baixados (criada automaticamente)
 |---|---|---|
 | GET | `/api/search?q=...` | Busca vídeos |
 | GET | `/api/thumb/:videoId` | Thumbnail em proxy (com cache) |
-| POST | `/api/downloads` `{videoId}` | Inicia o download (job) |
+| GET | `/api/video/:videoId` | Detalhes completos (descrição + resoluções disponíveis) |
+| POST | `/api/downloads` `{videoId, kind, quality}` | Inicia o download (job); `kind`: `video`\|`audio`, `quality`: altura máx. (ex. `720`) |
 | GET | `/api/jobs/:id` | Progresso do job |
 | POST | `/api/jobs/:id/cancel` | Cancela o download |
 | GET | `/api/library` | Lista os baixados |
-| DELETE | `/api/library/:fileId` | Exclui um vídeo |
-| GET | `/media/:fileId.mp4` | Stream do vídeo (Range habilitado) |
+| GET | `/api/library/:fileId` | Metadados de um item |
+| GET | `/api/library/:fileId/download` | Baixa o arquivo do servidor para o dispositivo |
+| DELETE | `/api/library/:fileId` | Exclui um item |
+| GET | `/media/:fileId.<container>` | Stream de vídeo/áudio (Range habilitado) |
 
 ## Observações
 
