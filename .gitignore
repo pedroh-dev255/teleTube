@@ -3,3 +3,4 @@ downloads/
 .cache/
 *.log
 .env
+cookies.txt
